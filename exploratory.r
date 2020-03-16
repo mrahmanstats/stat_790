@@ -10,6 +10,8 @@ library(pec)
 library(SurvBoost)
 library(riskRegression)
 library(fastDummies)
+library(Metrics)
+library(randomForestSRC)
 
 #Distribution of follow up time
 brca <- fread("brca.csv", na.strings = "")
@@ -20,9 +22,8 @@ brca_df$race[is.na(brca_df$race)] <- "Unknown"
 brca_df$subtype[is.na(brca_df$subtype)] <- "Unknown"
 brca_df <- brca_df[brca_df$race!="AMERICAN INDIAN OR ALASKA NATIVE",] 
 brca_df$ajcc_pathologic_tumor_stage[is.na(brca_df$ajcc_pathologic_tumor_stage)] <- "Unknown"
-brca_data <- brca_df 
-# %>% dummy_cols()
-# brca_data <- brca_data %>% select_if(~ !is.character(.))
+brca_data <- brca_df %>% dummy_cols()
+brca_data <- brca_data %>% select_if(~ !is.character(.)) %>% clean_names()
 
 ggplot(data = brca, aes(x = OS.time)) +
   geom_histogram(aes(fill = factor(OS))) +
@@ -63,35 +64,55 @@ cox_fit_1 <- coxph(Surv(OS.time, OS)~., data = train, x=T)
 testPH <- cox.zph(cox_fit_1)
 testPH
 
-brca_boost <- train %>% dplyr::select(-ajcc_pathologic_tumor_stage, -histological_type, -race, -subtype, -age, -gender)
+brca_boost_train <- train  
 
-cox_boost <- boosting_core( 
-  Surv(OS.time, OS)~.,
-  rate = 0.2, 
-  data = brca_boost)
+set.seed(123)
+cox_boost <- 
+  boosting_core( 
+  Surv(os_time, os)~.,
+  rate = 0.1, 
+  num_iter = 3000,
+  control_method = "BIC",
+  data = brca_boost_train)
 
-boost_df <- train %>% dplyr::select(c(names(cox_boost$coefficients[cox_boost$coefficients > 0]), OS.time, OS))
+boost_df <- 
+  train %>% 
+  select(c(names(cox_boost$coefficients[cox_boost$coefficients > 0]), os_time, os)) %>%
+  select( -prex1, -eif4e, -ecadherin, -cmyc, -claudin7, -ar)
 
-cox_fit_2 <- coxph(Surv(OS.time, OS)~.-ECADHERIN, data = boost_df, x=T)
-testPH <- cox.zph(cox_fit_2)
+cox_fit_train <- coxph(Surv(os_time, os)~. , data = boost_df, x=T)
+testPH <- cox.zph(cox_fit_train)
 testPH
 
-cox_fit_2 %>% summary()
+cox_fit_train %>% summary()
 
-cox_fit_2 <- coxph(Surv(OS.time, OS)~. -ajcc_pathologic_tumor_stage -subtype, data = train[,1:8], x=T)
-testPH <- cox.zph(cox_fit_2)
-testPH
-
-cindex(cox_fit_1, Surv(OS.time, OS)~., data = brca_df[,1:8])
-cindex(cox_fit_2, Surv(OS.time, OS)~ age + gender + race, data = brca_df[,1:8])
-
-cox_fit2 <- coxph(Surv(OS.time, OS)~. -subtype,
-                  data = brca_df)
+train_lp <- cox_fit_train$linear.predictors
+train_lp_pred <- predict(cox_fit_train, test, type = "lp")
+rmse(train_lp, train_lp_pred)
 
 
+cox_fit_test <- coxph(Surv(os_time, os)~., data = test %>% select(names(boost_df)), x = T)
+cox_fit_test %>% summary()
+
+#31.1
+set.seed(123)
+rf_fit_train <- rfsrc(Surv(os_time, os)~. , data = boost_df, ntree = 1000, mtry = 4)
+rf_fit_train 
 
 
+#30.59
+set.seed(123)
+rf_fit_train <- rfsrc(Surv(os_time, os)~. , data = boost_df, ntree = 2000, mtry = 5)
+rf_fit_train 
+cindex(rf_fit_train)
 
+#30.85
+set.seed(123)
+rf_fit_train <- rfsrc(Surv(os_time, os)~. , data = boost_df, ntree = 3000, mtry = 6)
+rf_fit_train 
 
-
+set.seed(123)
+rf_fit_test <- rfsrc(Surv(os_time, os)~. , data = test %>% select(names(boost_df)), ntree = 2000, mtry = 5)
+rf_fit_test 
+cindex(rf_fit_test)
 
